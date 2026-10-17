@@ -7,8 +7,8 @@ SITE_BASE_URL = "https://www.fnx.co.il"
 PUBLIC_HOSTS = {"www.fnx.co.il"}
 HEBREW_STOPWORDS = {
     "אני", "אתה", "את", "הוא", "היא", "אנחנו", "הם", "הן", "של", "על",
-    "עם", "מה", "איך", "איפה", "האם", "אפשר", "יש", "אין", "אתר", "באתר",
-    "מידע", "לגבי", "עבור", "כדי", "שלי", "שלך", "הזה", "הזאת", "יותר",
+    "עם", "מה", "איך", "איפה", "האם", "אפשר", "יש", "אין", "לא", "אתר", "באתר",
+    "מידע", "לגבי", "עבור", "כדי", "שלי", "שלך", "הזה", "הזאת", "יותר", "כולל",
 }
 
 
@@ -69,7 +69,12 @@ def extract_page_text(html: str) -> str:
     text_blocks: list[str] = []
 
     for element in main.find_all(["h1", "h2", "h3", "p", "li"]):
+        if element.find_parent(["p", "li"]):
+            continue
         content = " ".join(element.get_text(" ", strip=True).split())
+        content = re.sub(r"לדעת עוד(?: על .*?)? עוד סגור", " ", content)
+        content = re.sub(r"לקבלת הצעה|מידע נוסף", " ", content)
+        content = re.sub(r"\s+", " ", content).strip()
         if content and len(content) > 2:
             text_blocks.append(content)
 
@@ -132,10 +137,24 @@ def answer_from_documents(question: str, docs: list[dict[str, str]], limit: int 
             [],
         )
 
-    keywords = [
-        token for token in re.findall(r"[א-תA-Za-z0-9]+", question.lower())
-        if len(token) > 1 and token not in HEBREW_STOPWORDS
-    ]
+    if re.search(r"לא הבנתי|לא ברור לי|לא הבנתי את התשובה|אפשר להסביר", question.strip().lower()):
+        return (
+            "בשמחה. איזו נקודה תרצי שאסביר מחדש? אפשר גם לכתוב את השאלה במילים אחרות, למשל: «מה מכסה ביטוח מקיף?».",
+            [],
+        )
+
+    normalized_question = question.strip().lower()
+    if "ביטוח מקיף" in normalized_question:
+        keywords = ["מקיף", "נזקי רכוש", "צד ג", "רכב"]
+    elif "ביטוח חובה" in normalized_question:
+        keywords = ["חובה", "מחיר", "נהג", "רכב"]
+    elif "ביטוח צד ג" in normalized_question or "צד שלישי" in normalized_question:
+        keywords = ["צד ג", "צד שלישי", "נזקי רכוש"]
+    else:
+        keywords = [
+            token for token in re.findall(r"[א-תA-Za-z0-9]+", normalized_question)
+            if len(token) > 1 and token not in HEBREW_STOPWORDS
+        ]
     if not keywords:
         return (
             "כדי שאוכל לחפש במידע שבאתר, כתבי שאלה ממוקדת יותר — למשל: «מה כולל ביטוח מקיף?».",
@@ -151,18 +170,42 @@ def answer_from_documents(question: str, docs: list[dict[str, str]], limit: int 
             for block in text.splitlines()
             for sentence in re.split(r"(?<=[.!?؟])\s+", block)
             if len(sentence.strip()) >= 24
+            and len(sentence.split()) >= 5
+            and len(sentence.split()) <= 40
         ]
         if not fragments and text.strip():
             fragments = [text.strip()]
 
         for fragment in fragments:
             lowered = fragment.lower()
-            matched = {keyword for keyword in keywords if keyword in lowered}
-            minimum_matches = max(1, (len(set(keywords)) + 1) // 2)
+            if "ביטוח מקיף" in normalized_question and "מקיף" in lowered:
+                matched = {"מקיף"}
+                if "רכב" in lowered or "רכוש" in lowered:
+                    matched.add("נזקי רכוש")
+                if "צד ג" in lowered or "צד שלישי" in lowered:
+                    matched.add("צד ג")
+                if "רכב חשמלי" in lowered:
+                    matched.discard("נזקי רכוש")
+                    matched.discard("צד ג")
+            else:
+                matched = {
+                    keyword
+                    for keyword in keywords
+                    if keyword in lowered
+                    or (len(keyword) > 3 and keyword[1:] in lowered)
+                }
+            minimum_matches = 1 if "ביטוח מקיף" in normalized_question else max(1, (len(set(keywords)) + 1) // 2)
             if len(matched) < minimum_matches:
                 continue
-            title_bonus = sum(keyword in title.lower() for keyword in keywords) * 0.25
-            score = len(matched) / len(set(keywords)) + title_bonus
+            if len(keywords) > 1 and len(matched) == 1 and len(fragment.split()) < 10:
+                continue
+            title_matches = sum(
+                keyword in title.lower() or (len(keyword) > 3 and keyword[1:] in title.lower())
+                for keyword in keywords
+            )
+            ui_penalty = 0.4 if re.search(r"לדעת עוד|עוד סגור|לקבלת הצעה", fragment) else 0
+            length_penalty = max(0, len(fragment.split()) - 20) * 0.01
+            score = len(matched) / len(set(keywords)) + title_matches * 0.05 - ui_penalty - length_penalty
             ranked.append((score, fragment, doc))
 
     if not ranked:
@@ -175,6 +218,7 @@ def answer_from_documents(question: str, docs: list[dict[str, str]], limit: int 
     selected: list[tuple[float, str, dict[str, str]]] = []
     sources: list[str] = []
     seen_fragments: set[str] = set()
+    max_results = min(limit, 2)
     for item in ranked:
         _, fragment, doc = item
         normalized_fragment = re.sub(r"\s+", " ", fragment).strip()
@@ -185,11 +229,13 @@ def answer_from_documents(question: str, docs: list[dict[str, str]], limit: int 
         source = doc["source_url"]
         if source not in sources:
             sources.append(source)
-        if len(selected) >= limit:
+        if len(selected) >= max_results:
             break
 
     bullets = []
     for _, fragment, _ in selected:
+        fragment = re.sub(r"\s*\([^)]{0,100}כרוכ[^)]*\)", "", fragment)
+        fragment = re.sub(r"\s+", " ", fragment).strip()
         if len(fragment) > 280:
             fragment = fragment[:277].rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
         bullets.append(f"- {fragment}")

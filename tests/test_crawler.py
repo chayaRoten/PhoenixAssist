@@ -46,6 +46,25 @@ def test_extract_page_text_keeps_main_content_but_drops_nav_and_footer():
     assert "Contact us" not in text
 
 
+def test_extract_page_text_drops_duplicate_nested_blocks_and_site_controls():
+        html = """
+        <main>
+            <section>
+                <h2>ביטוח מקיף</h2>
+                <p>ביטוח מקיף מעניק כיסוי לנזקי רכוש ולצד שלישי.</p>
+                <ul><li>שירותי דרך וגרירה</li></ul>
+                <button>לדעת עוד על ביטוח מקיף עוד סגור</button>
+            </section>
+        </main>
+        """
+
+        text = extract_page_text(html)
+
+        assert text.count("ביטוח מקיף מעניק") == 1
+        assert "לדעת עוד" not in text
+        assert "שירותי דרך וגרירה" in text
+
+
 def test_answer_from_documents_returns_relevant_excerpt_and_source():
     docs = [
         {
@@ -79,4 +98,19 @@ def test_answer_from_documents_does_not_cite_unrelated_pages():
     answer, sources = answer_from_documents("מה גובה ההשתתפות העצמית?", docs)
 
     assert "לא מצאתי" in answer
+    assert sources == []
+
+
+def test_answer_from_documents_clarifies_confusion_instead_of_matching_content():
+    docs = [
+        {
+            "source_url": "https://www.fnx.co.il/car-insurance/comprehensive/",
+            "title": "ביטוח מקיף",
+            "text": "ביטוח מקיף מעניק כיסוי לנזקי רכוש ולצד שלישי.",
+        }
+    ]
+
+    answer, sources = answer_from_documents("לא הבנתי", docs)
+
+    assert "איזו נקודה תרצי שאסביר" in answer
     assert sources == []
