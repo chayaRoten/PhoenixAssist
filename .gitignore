@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+.venv/
+venv/
+ENV/
+
+# Environment files
+.env
+.env.*
+
+# Data folders
+/data/raw/
+/data/processed/
+*.json
+*.csv
+*.parquet
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build and logs
+*.log
+build/
+dist/
